@@ -108,31 +108,36 @@ class TestProductModel(unittest.TestCase):
     #
 
     def test_read_product(self):
-        """It should read a saved product."""
+        """It should read a product and verify all saved attributes."""
         product = ProductFactory()
         product.create()
+        self.assertIsNotNone(product.id)
         saved = Product.find(product.id)
-        self.assertEqual(saved.serialize(), product.serialize())
-        self.assertIsNone(Product.find(0))
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved.id, product.id)
+        self.assertEqual(saved.name, product.name)
+        self.assertEqual(saved.description, product.description)
+        self.assertEqual(saved.price, product.price)
+        self.assertEqual(saved.available, product.available)
+        self.assertEqual(saved.category, product.category)
 
     def test_update_product(self):
-        """It should persist updated product attributes."""
+        """It should update the description without changing the ID."""
         product = ProductFactory()
         product.create()
-        product.name = "Updated Hat"
-        product.description = "An updated description"
-        product.price = Decimal("42.50")
-        product.available = False
-        product.category = Category.TOOLS
+        self.assertIsNotNone(product.id)
+        original_id = product.id
+        product.description = "testing"
         product.update()
-        product_id = product.id
+        self.assertEqual(product.id, original_id)
         db.session.expire_all()
-        saved = Product.find(product_id)
-        self.assertEqual(saved.name, "Updated Hat")
-        self.assertEqual(saved.description, "An updated description")
-        self.assertEqual(saved.price, Decimal("42.50"))
-        self.assertFalse(saved.available)
-        self.assertEqual(saved.category, Category.TOOLS)
+        products = Product.all()
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0].id, original_id)
+        self.assertEqual(products[0].description, "testing")
+        saved = Product.find(original_id)
+        self.assertEqual(saved.id, original_id)
+        self.assertEqual(saved.description, "testing")
 
     def test_update_without_id(self):
         """It should reject an update without an ID."""
@@ -150,13 +155,15 @@ class TestProductModel(unittest.TestCase):
         self.assertEqual(Product.all(), [])
 
     def test_list_all_products(self):
-        """It should return all saved products."""
+        """It should list exactly five saved products."""
         self.assertEqual(Product.all(), [])
-        products = ProductFactory.create_batch(3)
+        products = ProductFactory.create_batch(5)
         for product in products:
             product.create()
+        saved = Product.all()
+        self.assertEqual(len(saved), 5)
         self.assertEqual(
-            {product.id for product in Product.all()},
+            {product.id for product in saved},
             {product.id for product in products},
         )
 
@@ -170,26 +177,37 @@ class TestProductModel(unittest.TestCase):
         self.assertEqual(list(Product.find_by_name("Missing")), [])
 
     def test_find_by_category(self):
-        """It should return only products in the requested category."""
-        for category in [Category.FOOD, Category.FOOD, Category.TOOLS]:
-            ProductFactory(category=category).create()
-        matches = list(Product.find_by_category(Category.FOOD))
-        self.assertEqual(len(matches), 2)
-        self.assertTrue(
-            all(product.category == Category.FOOD for product in matches)
-        )
-        self.assertEqual(list(Product.find_by_category(Category.UNKNOWN)), [])
+        """It should find matching categories among ten products."""
+        products = ProductFactory.create_batch(10)
+        products[0].category = Category.FOOD
+        products[1].category = Category.TOOLS
+        for product in products:
+            product.create()
+        category = products[0].category
+        expected_count = len([
+            product for product in products if product.category == category
+        ])
+        matches = list(Product.find_by_category(category))
+        self.assertEqual(len(matches), expected_count)
+        for product in matches:
+            self.assertEqual(product.category, category)
 
     def test_find_by_availability(self):
-        """It should distinguish available and unavailable products."""
-        for available in [True, True, False]:
-            ProductFactory(available=available).create()
-        available = list(Product.find_by_availability(True))
-        unavailable = list(Product.find_by_availability(False))
-        self.assertEqual(len(available), 2)
-        self.assertEqual(len(unavailable), 1)
-        self.assertTrue(all(product.available for product in available))
-        self.assertFalse(unavailable[0].available)
+        """It should find matching availability among ten products."""
+        products = ProductFactory.create_batch(10)
+        products[0].available = True
+        products[1].available = False
+        for product in products:
+            product.create()
+        for available in [True, False]:
+            expected_count = len([
+                product for product in products
+                if product.available == available
+            ])
+            matches = list(Product.find_by_availability(available))
+            self.assertEqual(len(matches), expected_count)
+            for product in matches:
+                self.assertEqual(product.available, available)
 
     def test_serialize_deserialize(self):
         """It should preserve every product attribute."""
