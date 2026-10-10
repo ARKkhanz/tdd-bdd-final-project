@@ -28,6 +28,7 @@ import os
 import logging
 from decimal import Decimal
 from unittest import TestCase
+from service.models import Category
 from service import app
 from service.common import status
 from service.models import db, init_db, Product
@@ -83,7 +84,8 @@ class TestProductRoutes(TestCase):
         products = []
         for _ in range(count):
             test_product = ProductFactory()
-            response = self.client.post(BASE_URL, json=test_product.serialize())
+            response = self.client.post(
+                BASE_URL, json=test_product.serialize())
             self.assertEqual(
                 response.status_code, status.HTTP_201_CREATED, "Could not create test product"
             )
@@ -156,12 +158,15 @@ class TestProductRoutes(TestCase):
     def test_create_product_no_content_type(self):
         """It should not Create a Product with no Content-Type"""
         response = self.client.post(BASE_URL, data="bad data")
-        self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+        self.assertEqual(response.status_code,
+                         status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
     def test_create_product_wrong_content_type(self):
         """It should not Create a Product with wrong Content-Type"""
-        response = self.client.post(BASE_URL, data={}, content_type="plain/text")
-        self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+        response = self.client.post(
+            BASE_URL, data={}, content_type="plain/text")
+        self.assertEqual(response.status_code,
+                         status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
     #
     # ADD YOUR TEST CASES HERE
@@ -178,3 +183,168 @@ class TestProductRoutes(TestCase):
         data = response.get_json()
         # logging.debug("data = %s", data)
         return len(data)
+
+    def test_get_product(self):
+        """It should read a product and follow its Location header."""
+        product = self._create_products(1)[0]
+        response = self.client.get(f"{BASE_URL}/{product.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.get_json()
+        self.assertEqual(data["id"], product.id)
+        self.assertEqual(data["name"], product.name)
+        self.assertEqual(data["description"], product.description)
+        self.assertEqual(Decimal(data["price"]), product.price)
+        self.assertEqual(data["available"], product.available)
+        self.assertEqual(data["category"], product.category.name)
+        created = self.client.post(BASE_URL, json=product.serialize())
+        located = self.client.get(created.headers["Location"])
+        self.assertEqual(located.status_code, status.HTTP_200_OK)
+        self.assertEqual(located.get_json(), created.get_json())
+
+    def test_get_product_not_found(self):
+        """It should return 404 for an unknown product."""
+        response = self.client.get(f"{BASE_URL}/0")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertIn("was not found", response.get_json()["message"])
+
+    def test_update_product(self):
+        """It should update and persist all product fields."""
+        product = self._create_products(1)[0]
+        data = product.serialize()
+        data.update(
+            name="Fedora", description="Updated description",
+            price="42.50", available=False, category="TOOLS",
+        )
+        response = self.client.put(f"{BASE_URL}/{product.id}", json=data)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        saved = self.client.get(f"{BASE_URL}/{product.id}").get_json()
+        self.assertEqual(saved, response.get_json())
+        self.assertEqual(saved["id"], product.id)
+        self.assertEqual(saved["name"], "Fedora")
+        self.assertEqual(saved["description"], "Updated description")
+        self.assertEqual(Decimal(saved["price"]), Decimal("42.50"))
+        self.assertFalse(saved["available"])
+        self.assertEqual(saved["category"], "TOOLS")
+
+    def test_update_product_not_found(self):
+        """It should return 404 when updating an unknown product."""
+        response = self.client.put(
+            f"{BASE_URL}/0", json=ProductFactory().serialize()
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_update_product_invalid_data(self):
+        """It should reject an update missing required fields."""
+        product = self._create_products(1)[0]
+        response = self.client.put(f"{BASE_URL}/{product.id}", json={})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_update_product_wrong_content_type(self):
+        """It should reject an update with the wrong media type."""
+        product = self._create_products(1)[0]
+        response = self.client.put(
+            f"{BASE_URL}/{product.id}",
+            data="bad", content_type="text/plain",
+        )
+        self.assertEqual(
+            response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+        )
+
+    def test_delete_product(self):
+        """It should delete a product with an empty 204 response."""
+        product = self._create_products(1)[0]
+        response = self.client.delete(f"{BASE_URL}/{product.id}")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(response.data, b"")
+        self.assertEqual(
+            self.client.get(f"{BASE_URL}/{product.id}").status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_delete_product_not_found(self):
+        """It should allow repeated deletion without creating products."""
+        response = self.client.delete(f"{BASE_URL}/0")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_list_all_products(self):
+        """It should list every product and handle an empty catalog."""
+        self.assertEqual(self.client.get(BASE_URL).get_json(), [])
+        products = self._create_products(3)
+        response = self.client.get(BASE_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {item["id"] for item in response.get_json()},
+            {product.id for product in products},
+        )
+
+    def test_list_by_name(self):
+        """It should list only products matching the requested name."""
+        for name in ["Hat", "Hat", "Shoes"]:
+            self.client.post(
+                BASE_URL, json=ProductFactory(name=name).serialize()
+            )
+        response = self.client.get(BASE_URL, query_string={"name": "Hat"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        matches = response.get_json()
+        self.assertEqual(len(matches), 2)
+        self.assertTrue(all(item["name"] == "Hat" for item in matches))
+        self.assertEqual(
+            self.client.get(
+                BASE_URL, query_string={"name": "Missing"}
+            ).get_json(), [],
+        )
+
+    def test_list_by_category(self):
+        """It should list products matching the requested category."""
+        for category in [Category.FOOD, Category.FOOD, Category.TOOLS]:
+            self.client.post(
+                BASE_URL,
+                json=ProductFactory(category=category).serialize(),
+            )
+        response = self.client.get(
+            BASE_URL, query_string={"category": "FOOD"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        matches = response.get_json()
+        self.assertEqual(len(matches), 2)
+        self.assertTrue(all(item["category"] == "FOOD" for item in matches))
+
+    def test_list_by_availability(self):
+        """It should filter both available and unavailable products."""
+        for available in [True, True, False]:
+            self.client.post(
+                BASE_URL,
+                json=ProductFactory(available=available).serialize(),
+            )
+        for value, expected, count in [("true", True, 2), ("false", False, 1)]:
+            response = self.client.get(
+                BASE_URL, query_string={"available": value}
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            matches = response.get_json()
+            self.assertEqual(len(matches), count)
+            self.assertTrue(
+                all(item["available"] == expected for item in matches)
+            )
+
+    def test_invalid_search_filters(self):
+        """It should reject invalid category and availability filters."""
+        for query in [{"category": "INVALID"}, {"available": "maybe"}]:
+            response = self.client.get(BASE_URL, query_string=query)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_create_attributes(self):
+        """It should reject invalid boolean and category values."""
+        payload = ProductFactory().serialize()
+        for changes in [{"available": "true"}, {"category": "INVALID"}]:
+            response = self.client.post(
+                BASE_URL, json=dict(payload, **changes)
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_method_not_allowed(self):
+        """It should reject unsupported collection methods."""
+        response = self.client.put(BASE_URL, json={})
+        self.assertEqual(
+            response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED
+        )
